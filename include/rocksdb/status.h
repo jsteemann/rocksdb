@@ -307,14 +307,11 @@ class Status {
   std::string ToString() const;
 
  private:
-  // A nullptr state_ (which is always the case for OK) means the message
-  // is empty.
-  // of the following form:
-  //    state_[0..3] == length of message
-  //    state_[4..]  == message
   Code code_;
   SubCode subcode_;
   Severity sev_;
+  // A nullptr state_ (which is always the case for OK) means the message
+  // is empty.
   const char* state_;
 
   explicit Status(Code _code, SubCode _subcode = kNone)
