@@ -78,7 +78,8 @@ class DBImplSecondary : public DBImpl {
   // and log_readers_ to facilitate future operations.
   Status Recover(const std::vector<ColumnFamilyDescriptor>& column_families,
                  bool read_only, bool error_if_log_file_exist,
-                 bool error_if_data_exists_in_logs) override;
+                 bool error_if_data_exists_in_logs,
+                 uint64_t* = nullptr) override;
 
   // Implementations of the DB interface
   using DB::Get;
@@ -169,6 +170,24 @@ class DBImplSecondary : public DBImpl {
   using DBImpl::Flush;
   Status Flush(const FlushOptions& /*options*/,
                ColumnFamilyHandle* /*column_family*/) override {
+    return Status::NotSupported("Not supported operation in secondary mode.");
+  }
+
+  using DBImpl::SetDBOptions;
+  Status SetDBOptions(const std::unordered_map<std::string, std::string>&
+                      /*options_map*/) override {
+    // Currently not supported because changing certain options may cause
+    // flush/compaction.
+    return Status::NotSupported("Not supported operation in secondary mode.");
+  }
+
+  using DBImpl::SetOptions;
+  Status SetOptions(
+      ColumnFamilyHandle* /*cfd*/,
+      const std::unordered_map<std::string, std::string>& /*options_map*/)
+      override {
+    // Currently not supported because changing certain options may cause
+    // flush/compaction and/or write to MANIFEST.
     return Status::NotSupported("Not supported operation in secondary mode.");
   }
 
@@ -267,6 +286,14 @@ class DBImplSecondary : public DBImpl {
       }
     }
     return s;
+  }
+
+  bool OwnTablesAndLogs() const override {
+    // Currently, the secondary instance does not own the database files. It
+    // simply opens the files of the primary instance and tracks their file
+    // descriptors until they become obsolete. In the future, the secondary may
+    // create links to database files. OwnTablesAndLogs will return true then.
+    return false;
   }
 
  private:

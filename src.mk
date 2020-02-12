@@ -29,7 +29,7 @@ LIB_SOURCES =                                                   \
   db/db_info_dumper.cc                                          \
   db/db_iter.cc                                                 \
   db/dbformat.cc                                                \
-  db/error_handler.cc						\
+  db/error_handler.cc						                                \
   db/event_helpers.cc                                           \
   db/experimental.cc                                            \
   db/external_sst_file_ingestion_job.cc                         \
@@ -68,6 +68,8 @@ LIB_SOURCES =                                                   \
   env/env_encryption.cc                                         \
   env/env_hdfs.cc                                               \
   env/env_posix.cc                                              \
+  env/file_system.cc                                            \
+  env/fs_posix.cc                                           	  \
   env/io_posix.cc                                               \
   env/mock_env.cc                                               \
   file/delete_scheduler.cc                                      \
@@ -125,13 +127,14 @@ LIB_SOURCES =                                                   \
   table/block_based/data_block_hash_index.cc                    \
   table/block_based/data_block_footer.cc                        \
   table/block_based/filter_block_reader_common.cc               \
+  table/block_based/filter_policy.cc                            \
   table/block_based/flush_block_policy.cc                       \
   table/block_based/full_filter_block.cc                        \
   table/block_based/index_builder.cc                            \
   table/block_based/parsed_full_filter_block.cc                 \
   table/block_based/partitioned_filter_block.cc                 \
   table/block_based/uncompression_dict_reader.cc                \
-  table/block_fetcher.cc                             		\
+  table/block_fetcher.cc                             		        \
   table/cuckoo/cuckoo_table_builder.cc                          \
   table/cuckoo/cuckoo_table_factory.cc                          \
   table/cuckoo/cuckoo_table_reader.cc                           \
@@ -157,7 +160,6 @@ LIB_SOURCES =                                                   \
   tools/dump/db_dump_tool.cc                                    \
   trace_replay/trace_replay.cc                                  \
   trace_replay/block_cache_tracer.cc                            \
-  util/bloom.cc                                                 \
   util/build_version.cc                                         \
   util/coding.cc                                                \
   util/compaction_job_stats_impl.cc                             \
@@ -166,12 +168,12 @@ LIB_SOURCES =                                                   \
   util/concurrent_task_limiter_impl.cc                          \
   util/crc32c.cc                                                \
   util/dynamic_bloom.cc                                         \
-  util/filter_policy.cc                                         \
   util/hash.cc                                                  \
   util/murmurhash.cc                                            \
   util/random.cc                                                \
   util/rate_limiter.cc                                          \
   util/slice.cc                                                 \
+  util/file_checksum_helper.cc      				\
   util/status.cc                                                \
   util/string_util.cc                                           \
   util/thread_local.cc                                          \
@@ -199,7 +201,7 @@ LIB_SOURCES =                                                   \
   utilities/memory/memory_util.cc                               \
   utilities/merge_operators/max.cc                              \
   utilities/merge_operators/put.cc                              \
-  utilities/merge_operators/sortlist.cc                  		\
+  utilities/merge_operators/sortlist.cc                  		    \
   utilities/merge_operators/string_append/stringappend.cc       \
   utilities/merge_operators/string_append/stringappend2.cc      \
   utilities/merge_operators/uint64add.cc                        \
@@ -265,6 +267,17 @@ MOCK_LIB_SOURCES =                                              \
 BENCH_LIB_SOURCES =                                             \
   tools/db_bench_tool.cc                                        \
 
+STRESS_LIB_SOURCES =                                            \
+  db_stress_tool/batched_ops_stress.cc                         \
+  db_stress_tool/cf_consistency_stress.cc                      \
+  db_stress_tool/db_stress_common.cc                           \
+  db_stress_tool/db_stress_driver.cc                           \
+  db_stress_tool/db_stress_test_base.cc                        \
+  db_stress_tool/db_stress_gflags.cc                           \
+  db_stress_tool/db_stress_shared_state.cc                     \
+  db_stress_tool/db_stress_tool.cc                             \
+  db_stress_tool/no_batched_ops_stress.cc                      \
+
 TEST_LIB_SOURCES =                                              \
   db/db_test_util.cc                                            \
   test_util/testharness.cc                                      \
@@ -281,6 +294,7 @@ FOLLY_SOURCES = \
 MAIN_SOURCES =                                                          \
   cache/cache_bench.cc                                                  \
   cache/cache_test.cc                                                   \
+  db_stress_tool/db_stress.cc                                           \
   db/column_family_test.cc                                              \
   db/compact_files_test.cc                                              \
   db/compaction/compaction_iterator_test.cc                             \
@@ -342,7 +356,7 @@ MAIN_SOURCES =                                                          \
   db/memtable_list_test.cc                                              \
   db/merge_helper_test.cc                                               \
   db/merge_test.cc                                                      \
-  db/obsolete_files_test.cc						\
+  db/obsolete_files_test.cc						                                  \
   db/options_settable_test.cc                                           \
   db/options_file_test.cc                                               \
   db/perf_context_test.cc                                               \
@@ -399,17 +413,20 @@ MAIN_SOURCES =                                                          \
   tools/ldb_cmd_test.cc                                                 \
   tools/reduce_levels_test.cc                                           \
   tools/sst_dump_test.cc                                                \
-  tools/trace_analyzer_test.cc				             	\
+  tools/trace_analyzer_test.cc				             	                    \
   trace_replay/block_cache_tracer_test.cc                               \
   util/autovector_test.cc                                               \
   util/bloom_test.cc                                                    \
   util/coding_test.cc                                                   \
   util/crc32c_test.cc                                                   \
+  util/defer_test.cc                                                    \
   util/dynamic_bloom_test.cc                                            \
   util/filelock_test.cc                                                 \
   util/log_write_bench.cc                                               \
   util/rate_limiter_test.cc                                             \
+  util/random_test.cc                                                   \
   util/repeatable_thread_test.cc                                        \
+  util/slice_test.cc                                                    \
   util/slice_transform_test.cc                                          \
   util/timer_queue_test.cc                                              \
   util/thread_list_test.cc                                              \

@@ -3,14 +3,15 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 //
-// Copyright (c) 2012 The LevelDB Authors. All rights reserved.
+// Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
-#include "rocksdb/filter_policy.h"
-
+#ifdef GFLAGS
+#pragma once
+#include "db_stress_tool/db_stress_test_base.h"
 namespace rocksdb {
-
-FilterPolicy::~FilterPolicy() { }
-
+extern void ThreadBody(void* /*thread_state*/);
+extern bool RunStressTest(StressTest*);
 }  // namespace rocksdb
+#endif  // GFLAGS

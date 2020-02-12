@@ -13,9 +13,11 @@
 #include "db/dbformat.h"
 #include "db/log_reader.h"
 #include "db/write_batch_internal.h"
+#include "env/composite_env_wrapper.h"
 #include "file/filename.h"
 #include "port/port_dirent.h"
 #include "rocksdb/cache.h"
+#include "rocksdb/file_checksum.h"
 #include "rocksdb/table_properties.h"
 #include "rocksdb/utilities/backupable_db.h"
 #include "rocksdb/utilities/checkpoint.h"
@@ -28,6 +30,7 @@
 #include "tools/sst_dump_tool_imp.h"
 #include "util/cast_util.h"
 #include "util/coding.h"
+#include "util/file_checksum_helper.h"
 #include "util/stderr_logger.h"
 #include "util/string_util.h"
 #include "utilities/merge_operators.h"
@@ -44,6 +47,8 @@
 #include <string>
 
 namespace rocksdb {
+
+class FileChecksumFuncCrc32c;
 
 const std::string LDBCommand::ARG_ENV_URI = "env_uri";
 const std::string LDBCommand::ARG_DB = "db";
@@ -217,6 +222,10 @@ LDBCommand* LDBCommand::SelectCommand(const ParsedParams& parsed_params) {
     return new ManifestDumpCommand(parsed_params.cmd_params,
                                    parsed_params.option_map,
                                    parsed_params.flags);
+  } else if (parsed_params.cmd == FileChecksumDumpCommand::Name()) {
+    return new FileChecksumDumpCommand(parsed_params.cmd_params,
+                                       parsed_params.option_map,
+                                       parsed_params.flags);
   } else if (parsed_params.cmd == ListColumnFamiliesCommand::Name()) {
     return new ListColumnFamiliesCommand(parsed_params.cmd_params,
                                          parsed_params.option_map,
@@ -285,6 +294,8 @@ void LDBCommand::Run() {
     }
     options_.env = env;
   }
+
+  options_.file_system.reset(new LegacyFileSystemWrapper(options_.env));
 
   if (db_ == nullptr && !NoDBOpen()) {
     OpenDB();
@@ -705,6 +716,7 @@ Options LDBCommand::PrepareOptionsForOpenDB() {
           LDBCommandExecuteResult::Failed(ARG_FIX_PREFIX_LEN + " must be > 0.");
     }
   }
+
   // TODO(ajkr): this return value doesn't reflect the CF options changed, so
   // subcommands that rely on this won't see the effect of CF-related CLI args.
   // Such subcommands need to be changed to properly support CFs.
@@ -1016,8 +1028,8 @@ void DumpManifestFile(Options options, std::string file, bool verbose, bool hex,
                       /*block_cache_tracer=*/nullptr);
   Status s = versions.DumpManifest(options, file, verbose, hex, json);
   if (!s.ok()) {
-    printf("Error in processing file %s %s\n", file.c_str(),
-           s.ToString().c_str());
+    fprintf(stderr, "Error in processing file %s %s\n", file.c_str(),
+            s.ToString().c_str());
   }
 }
 
@@ -1066,45 +1078,166 @@ void ManifestDumpCommand::DoCommand() {
   if (!path_.empty()) {
     manifestfile = path_;
   } else {
-    bool found = false;
     // We need to find the manifest file by searching the directory
     // containing the db for files of the form MANIFEST_[0-9]+
 
-    auto CloseDir = [](DIR* p) { closedir(p); };
-    std::unique_ptr<DIR, decltype(CloseDir)> d(opendir(db_path_.c_str()),
-                                               CloseDir);
-
-    if (d == nullptr) {
-      exec_state_ =
-          LDBCommandExecuteResult::Failed(db_path_ + " is not a directory");
+    std::vector<std::string> files;
+    Status s = options_.env->GetChildren(db_path_, &files);
+    if (!s.ok()) {
+      std::string err_msg = s.ToString();
+      err_msg.append(": Failed to list the content of ");
+      err_msg.append(db_path_);
+      exec_state_ = LDBCommandExecuteResult::Failed(err_msg);
       return;
     }
-    struct dirent* entry;
-    while ((entry = readdir(d.get())) != nullptr) {
-      unsigned int match;
-      uint64_t num;
-      if (sscanf(entry->d_name, "MANIFEST-%" PRIu64 "%n", &num, &match) &&
-          match == strlen(entry->d_name)) {
-        if (!found) {
-          manifestfile = db_path_ + "/" + std::string(entry->d_name);
-          found = true;
-        } else {
+    const std::string kManifestNamePrefix = "MANIFEST-";
+    std::string matched_file;
+#ifdef OS_WIN
+    const char kPathDelim = '\\';
+#else
+    const char kPathDelim = '/';
+#endif
+    for (const auto& file_path : files) {
+      // Some Env::GetChildren() return absolute paths. Some directories' path
+      // end with path delim, e.g. '/' or '\\'.
+      size_t pos = file_path.find_last_of(kPathDelim);
+      if (pos == file_path.size() - 1) {
+        continue;
+      }
+      std::string fname;
+      if (pos != std::string::npos) {
+        // Absolute path.
+        fname.assign(file_path, pos + 1, file_path.size() - pos - 1);
+      } else {
+        fname = file_path;
+      }
+      uint64_t file_num = 0;
+      FileType file_type = kLogFile;  // Just for initialization
+      if (ParseFileName(fname, &file_num, &file_type) &&
+          file_type == kDescriptorFile) {
+        if (!matched_file.empty()) {
           exec_state_ = LDBCommandExecuteResult::Failed(
               "Multiple MANIFEST files found; use --path to select one");
           return;
+        } else {
+          matched_file.swap(fname);
         }
       }
     }
+    if (matched_file.empty()) {
+      std::string err_msg("No MANIFEST found in ");
+      err_msg.append(db_path_);
+      exec_state_ = LDBCommandExecuteResult::Failed(err_msg);
+      return;
+    }
+    if (db_path_[db_path_.length() - 1] != '/') {
+      db_path_.append("/");
+    }
+    manifestfile = db_path_ + matched_file;
   }
 
   if (verbose_) {
-    printf("Processing Manifest file %s\n", manifestfile.c_str());
+    fprintf(stdout, "Processing Manifest file %s\n", manifestfile.c_str());
   }
 
   DumpManifestFile(options_, manifestfile, verbose_, is_key_hex_, json_);
 
   if (verbose_) {
-    printf("Processing Manifest file %s done\n", manifestfile.c_str());
+    fprintf(stdout, "Processing Manifest file %s done\n", manifestfile.c_str());
+  }
+}
+
+// ----------------------------------------------------------------------------
+namespace {
+
+void GetLiveFilesChecksumInfoFromVersionSet(Options options,
+                                            const std::string& db_path,
+                                            FileChecksumList* checksum_list) {
+  EnvOptions sopt;
+  Status s;
+  std::string dbname(db_path);
+  std::shared_ptr<Cache> tc(NewLRUCache(options.max_open_files - 10,
+                                        options.table_cache_numshardbits));
+  // Notice we are using the default options not through SanitizeOptions(),
+  // if VersionSet::GetLiveFilesChecksumInfo depends on any option done by
+  // SanitizeOptions(), we need to initialize it manually.
+  options.db_paths.emplace_back(db_path, 0);
+  options.num_levels = 64;
+  WriteController wc(options.delayed_write_rate);
+  WriteBufferManager wb(options.db_write_buffer_size);
+  ImmutableDBOptions immutable_db_options(options);
+  VersionSet versions(dbname, &immutable_db_options, sopt, tc.get(), &wb, &wc,
+                      /*block_cache_tracer=*/nullptr);
+  std::vector<std::string> cf_name_list;
+  s = versions.ListColumnFamilies(&cf_name_list, db_path,
+                                  options.file_system.get());
+  if (s.ok()) {
+    std::vector<ColumnFamilyDescriptor> cf_list;
+    for (const auto& name : cf_name_list) {
+      cf_list.emplace_back(name, ColumnFamilyOptions(options));
+    }
+    s = versions.Recover(cf_list, true);
+  }
+  if (s.ok()) {
+    s = versions.GetLiveFilesChecksumInfo(checksum_list);
+  }
+  if (!s.ok()) {
+    fprintf(stderr, "Error Status: %s", s.ToString().c_str());
+  }
+}
+
+}  // namespace
+
+const std::string FileChecksumDumpCommand::ARG_PATH = "path";
+
+void FileChecksumDumpCommand::Help(std::string& ret) {
+  ret.append("  ");
+  ret.append(FileChecksumDumpCommand::Name());
+  ret.append(" [--" + ARG_PATH + "=<path_to_manifest_file>]");
+  ret.append("\n");
+}
+
+FileChecksumDumpCommand::FileChecksumDumpCommand(
+    const std::vector<std::string>& /*params*/,
+    const std::map<std::string, std::string>& options,
+    const std::vector<std::string>& flags)
+    : LDBCommand(options, flags, false, BuildCmdLineOptions({ARG_PATH})),
+      path_("") {
+  std::map<std::string, std::string>::const_iterator itr =
+      options.find(ARG_PATH);
+  if (itr != options.end()) {
+    path_ = itr->second;
+    if (path_.empty()) {
+      exec_state_ = LDBCommandExecuteResult::Failed("--path: missing pathname");
+    }
+  }
+}
+
+void FileChecksumDumpCommand::DoCommand() {
+  // print out the checksum information in the following format:
+  //  sst file number, checksum function name, checksum value
+  //  sst file number, checksum function name, checksum value
+  //  ......
+
+  std::unique_ptr<FileChecksumList> checksum_list(NewFileChecksumList());
+  GetLiveFilesChecksumInfoFromVersionSet(options_, db_path_,
+                                         checksum_list.get());
+  if (checksum_list != nullptr) {
+    std::vector<uint64_t> file_numbers;
+    std::vector<std::string> checksums;
+    std::vector<std::string> checksum_func_names;
+    Status s = checksum_list->GetAllFileChecksums(&file_numbers, &checksums,
+                                                  &checksum_func_names);
+    if (s.ok()) {
+      for (size_t i = 0; i < file_numbers.size(); i++) {
+        assert(i < file_numbers.size());
+        assert(i < checksums.size());
+        assert(i < checksum_func_names.size());
+        fprintf(stdout, "%" PRId64 ", %s, %s\n", file_numbers[i],
+                checksum_func_names[i].c_str(), checksums[i].c_str());
+      }
+    }
+    fprintf(stdout, "Print SST file checksum information finished \n");
   }
 }
 
@@ -1126,19 +1259,19 @@ void ListColumnFamiliesCommand::DoCommand() {
   std::vector<std::string> column_families;
   Status s = DB::ListColumnFamilies(options_, db_path_, &column_families);
   if (!s.ok()) {
-    printf("Error in processing db %s %s\n", db_path_.c_str(),
-           s.ToString().c_str());
+    fprintf(stderr, "Error in processing db %s %s\n", db_path_.c_str(),
+            s.ToString().c_str());
   } else {
-    printf("Column families in %s: \n{", db_path_.c_str());
+    fprintf(stdout, "Column families in %s: \n{", db_path_.c_str());
     bool first = true;
     for (auto cf : column_families) {
       if (!first) {
-        printf(", ");
+        fprintf(stdout, ", ");
       }
       first = false;
-      printf("%s", cf.c_str());
+      fprintf(stdout, "%s", cf.c_str());
     }
-    printf("}\n");
+    fprintf(stdout, "}\n");
   }
 }
 
@@ -1779,6 +1912,8 @@ void ReduceDBLevelsCommand::DoCommand() {
   Status st;
   Options opt = PrepareOptionsForOpenDB();
   int old_level_num = -1;
+  opt.file_system.reset(new LegacyFileSystemWrapper(opt.env));
+  ;
   st = GetOldNumOfLevels(opt, &old_level_num);
   if (!st.ok()) {
     exec_state_ = LDBCommandExecuteResult::Failed(st.ToString());
@@ -2065,8 +2200,8 @@ void DumpWalFile(Options options, std::string wal_file, bool print_header,
     std::unique_ptr<SequentialFile> file;
     status = env->NewSequentialFile(wal_file, &file, soptions);
     if (status.ok()) {
-      wal_file_reader.reset(
-          new SequentialFileReader(std::move(file), wal_file));
+      wal_file_reader.reset(new SequentialFileReader(
+          NewLegacySequentialFileWrapper(file), wal_file));
     }
   }
   if (!status.ok()) {
@@ -2761,7 +2896,7 @@ void CheckPointCommand::DoCommand() {
   Status status = Checkpoint::Create(db_, &checkpoint);
   status = checkpoint->CreateCheckpoint(checkpoint_dir_);
   if (status.ok()) {
-    printf("OK\n");
+    fprintf(stdout, "OK\n");
   } else {
     exec_state_ = LDBCommandExecuteResult::Failed(status.ToString());
   }
@@ -2785,7 +2920,7 @@ void RepairCommand::DoCommand() {
   options.info_log.reset(new StderrLogger(InfoLogLevel::WARN_LEVEL));
   Status status = RepairDB(db_path_, options);
   if (status.ok()) {
-    printf("OK\n");
+    fprintf(stdout, "OK\n");
   } else {
     exec_state_ = LDBCommandExecuteResult::Failed(status.ToString());
   }
@@ -2865,7 +3000,7 @@ void BackupCommand::DoCommand() {
     assert(GetExecuteState().IsFailed());
     return;
   }
-  printf("open db OK\n");
+  fprintf(stdout, "open db OK\n");
   Env* custom_env = nullptr;
   Env::LoadEnv(backup_env_uri_, &custom_env, &backup_env_guard_);
   assert(custom_env != nullptr);
@@ -2876,14 +3011,14 @@ void BackupCommand::DoCommand() {
   backup_options.max_background_operations = num_threads_;
   status = BackupEngine::Open(custom_env, backup_options, &backup_engine);
   if (status.ok()) {
-    printf("open backup engine OK\n");
+    fprintf(stdout, "open backup engine OK\n");
   } else {
     exec_state_ = LDBCommandExecuteResult::Failed(status.ToString());
     return;
   }
   status = backup_engine->CreateNewBackup(db_);
   if (status.ok()) {
-    printf("create new backup OK\n");
+    fprintf(stdout, "create new backup OK\n");
   } else {
     exec_state_ = LDBCommandExecuteResult::Failed(status.ToString());
     return;
@@ -2921,11 +3056,11 @@ void RestoreCommand::DoCommand() {
     }
   }
   if (status.ok()) {
-    printf("open restore engine OK\n");
+    fprintf(stdout, "open restore engine OK\n");
     status = restore_engine->RestoreDBFromLatestBackup(db_path_, db_path_);
   }
   if (status.ok()) {
-    printf("restore from backup OK\n");
+    fprintf(stdout, "restore from backup OK\n");
   } else {
     exec_state_ = LDBCommandExecuteResult::Failed(status.ToString());
   }

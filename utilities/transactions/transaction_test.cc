@@ -2823,6 +2823,104 @@ TEST_P(TransactionTest, MultiGetBatchedTest) {
   }
 }
 
+// This test calls WriteBatchWithIndex::MultiGetFromBatchAndDB with a large
+// number of keys, i.e greater than MultiGetContext::MAX_BATCH_SIZE, which is
+// is 32. This forces autovector allocations in the MultiGet code paths
+// to use std::vector in addition to stack allocations. The MultiGet keys
+// includes Merges, which are handled specially in MultiGetFromBatchAndDB by
+// allocating an autovector of MergeContexts
+TEST_P(TransactionTest, MultiGetLargeBatchedTest) {
+  WriteOptions write_options;
+  ReadOptions read_options, snapshot_read_options;
+  string value;
+  Status s;
+
+  ColumnFamilyHandle* cf;
+  ColumnFamilyOptions cf_options;
+
+  std::vector<std::string> key_str;
+  for (int i = 0; i < 100; ++i) {
+    key_str.emplace_back(std::to_string(i));
+  }
+  // Create a new column families
+  s = db->CreateColumnFamily(cf_options, "CF", &cf);
+  ASSERT_OK(s);
+
+  delete cf;
+  delete db;
+  db = nullptr;
+
+  // open DB with three column families
+  std::vector<ColumnFamilyDescriptor> column_families;
+  // have to open default column family
+  column_families.push_back(
+      ColumnFamilyDescriptor(kDefaultColumnFamilyName, ColumnFamilyOptions()));
+  // open the new column families
+  cf_options.merge_operator = MergeOperators::CreateStringAppendOperator();
+  column_families.push_back(ColumnFamilyDescriptor("CF", cf_options));
+
+  std::vector<ColumnFamilyHandle*> handles;
+
+  options.merge_operator = MergeOperators::CreateStringAppendOperator();
+  ASSERT_OK(ReOpenNoDelete(column_families, &handles));
+  assert(db != nullptr);
+
+  // Write some data to the db
+  WriteBatch batch;
+  for (int i = 0; i < 3 * MultiGetContext::MAX_BATCH_SIZE; ++i) {
+    std::string val = "val" + std::to_string(i);
+    batch.Put(handles[1], key_str[i], val);
+  }
+  s = db->Write(write_options, &batch);
+  ASSERT_OK(s);
+
+  WriteBatchWithIndex wb;
+  // Write some data to the db
+  s = wb.Delete(handles[1], std::to_string(1));
+  ASSERT_OK(s);
+  s = wb.Put(handles[1], std::to_string(2), "new_val" + std::to_string(2));
+  ASSERT_OK(s);
+  // Write a lot of merges so when we call MultiGetFromBatchAndDB later on,
+  // it is forced to use std::vector in rocksdb::autovector to allocate
+  // MergeContexts. The number of merges needs to be >
+  // MultiGetContext::MAX_BATCH_SIZE
+  for (int i = 8; i < MultiGetContext::MAX_BATCH_SIZE + 24; ++i) {
+    s = wb.Merge(handles[1], std::to_string(i), "merge");
+    ASSERT_OK(s);
+  }
+
+  // MultiGet a lot of keys in order to force std::vector reallocations
+  std::vector<Slice> keys;
+  for (int i = 0; i < MultiGetContext::MAX_BATCH_SIZE + 32; ++i) {
+    keys.emplace_back(key_str[i]);
+  }
+  std::vector<PinnableSlice> values(keys.size());
+  std::vector<Status> statuses(keys.size());
+
+  wb.MultiGetFromBatchAndDB(db, snapshot_read_options, handles[1], keys.size(), keys.data(),
+                values.data(), statuses.data(), false);
+  for (size_t i =0; i < keys.size(); ++i) {
+    if (i == 1) {
+      ASSERT_TRUE(statuses[1].IsNotFound());
+    } else if (i == 2) {
+      ASSERT_TRUE(statuses[2].ok());
+      ASSERT_EQ(values[2], "new_val" + std::to_string(2));
+    } else if (i >= 8 && i < 56) {
+      ASSERT_TRUE(statuses[i].ok());
+      ASSERT_EQ(values[i], "val" + std::to_string(i) + ",merge");
+    } else {
+      ASSERT_TRUE(statuses[i].ok());
+      if (values[i] != "val" + std::to_string(i)) {
+        ASSERT_EQ(values[i], "val" + std::to_string(i));
+      }
+    }
+  }
+
+  for (auto handle : handles) {
+    delete handle;
+  }
+}
+
 TEST_P(TransactionTest, ColumnFamiliesTest2) {
   WriteOptions write_options;
   ReadOptions read_options, snapshot_read_options;
@@ -6016,6 +6114,92 @@ TEST_P(TransactionTest, ReseekOptimization) {
   delete iter;
   txn0->Rollback();
   delete txn0;
+}
+
+// After recovery in kPointInTimeRecovery mode, the corrupted log file remains
+// there. The new log files should be still read succesfully during recovery of
+// the 2nd crash.
+TEST_P(TransactionTest, DoubleCrashInRecovery) {
+  for (const bool write_after_recovery : {false, true}) {
+    options.wal_recovery_mode = WALRecoveryMode::kPointInTimeRecovery;
+    ReOpen();
+    std::string cf_name = "two";
+    ColumnFamilyOptions cf_options;
+    ColumnFamilyHandle* cf_handle = nullptr;
+    ASSERT_OK(db->CreateColumnFamily(cf_options, cf_name, &cf_handle));
+
+    // Add a prepare entry to prevent the older logs from being deleted.
+    WriteOptions write_options;
+    TransactionOptions txn_options;
+    Transaction* txn = db->BeginTransaction(write_options, txn_options);
+    ASSERT_OK(txn->SetName("xid"));
+    ASSERT_OK(txn->Put(Slice("foo-prepare"), Slice("bar-prepare")));
+    ASSERT_OK(txn->Prepare());
+
+    FlushOptions flush_ops;
+    db->Flush(flush_ops);
+    // Now we have a log that cannot be deleted
+
+    ASSERT_OK(db->Put(write_options, cf_handle, "foo1", "bar1"));
+    // Flush only the 2nd cf
+    db->Flush(flush_ops, cf_handle);
+
+    // The value is large enough to be touched by the corruption we ingest
+    // below.
+    std::string large_value(400, ' ');
+    // key/value not touched by corruption
+    ASSERT_OK(db->Put(write_options, "foo2", "bar2"));
+    // key/value touched by corruption
+    ASSERT_OK(db->Put(write_options, "foo3", large_value));
+    // key/value not touched by corruption
+    ASSERT_OK(db->Put(write_options, "foo4", "bar4"));
+
+    db->FlushWAL(true);
+    DBImpl* db_impl = reinterpret_cast<DBImpl*>(db->GetRootDB());
+    uint64_t wal_file_id = db_impl->TEST_LogfileNumber();
+    std::string fname = LogFileName(dbname, wal_file_id);
+    reinterpret_cast<PessimisticTransactionDB*>(db)->TEST_Crash();
+    delete txn;
+    delete cf_handle;
+    delete db;
+    db = nullptr;
+
+    // Corrupt the last log file in the middle, so that it is not corrupted
+    // in the tail.
+    std::string file_content;
+    ASSERT_OK(ReadFileToString(env, fname, &file_content));
+    file_content[400] = 'h';
+    file_content[401] = 'a';
+    ASSERT_OK(env->DeleteFile(fname));
+    ASSERT_OK(WriteStringToFile(env, file_content, fname));
+
+    // Recover from corruption
+    std::vector<ColumnFamilyHandle*> handles;
+    std::vector<ColumnFamilyDescriptor> column_families;
+    column_families.push_back(ColumnFamilyDescriptor(kDefaultColumnFamilyName,
+                                                     ColumnFamilyOptions()));
+    column_families.push_back(
+        ColumnFamilyDescriptor("two", ColumnFamilyOptions()));
+    ASSERT_OK(ReOpenNoDelete(column_families, &handles));
+
+    if (write_after_recovery) {
+      // Write data to the log right after the corrupted log
+      ASSERT_OK(db->Put(write_options, "foo5", large_value));
+    }
+
+    // Persist data written to WAL during recovery or by the last Put
+    db->FlushWAL(true);
+    // 2nd crash to recover while having a valid log after the corrupted one.
+    ASSERT_OK(ReOpenNoDelete(column_families, &handles));
+    assert(db != nullptr);
+    txn = db->GetTransactionByName("xid");
+    ASSERT_TRUE(txn != nullptr);
+    ASSERT_OK(txn->Commit());
+    delete txn;
+    for (auto handle : handles) {
+      delete handle;
+    }
+  }
 }
 
 }  // namespace rocksdb

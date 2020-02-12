@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include "env/composite_env_wrapper.h"
+#include "file/writable_file_writer.h"
 #include "rocksdb/compaction_filter.h"
 #include "rocksdb/env.h"
 #include "rocksdb/iterator.h"
@@ -377,6 +379,13 @@ class StringSource: public RandomAccessFile {
   mutable int total_reads_;
 };
 
+inline StringSink* GetStringSinkFromLegacyWriter(
+    const WritableFileWriter* writer) {
+  LegacyWritableFileWrapper* file =
+      static_cast<LegacyWritableFileWrapper*>(writer->writable_file());
+  return static_cast<StringSink*>(file->target());
+}
+
 class NullLogger : public Logger {
  public:
   using Logger::Logv;
@@ -494,8 +503,8 @@ inline std::string EncodeInt(uint64_t x) {
 
   class SeqStringSource : public SequentialFile {
    public:
-    explicit SeqStringSource(const std::string& data)
-        : data_(data), offset_(0) {}
+    SeqStringSource(const std::string& data, std::atomic<int>* read_count)
+        : data_(data), offset_(0), read_count_(read_count) {}
     ~SeqStringSource() override {}
     Status Read(size_t n, Slice* result, char* scratch) override {
       std::string output;
@@ -508,6 +517,7 @@ inline std::string EncodeInt(uint64_t x) {
         return Status::InvalidArgument(
             "Attemp to read when it already reached eof.");
       }
+      (*read_count_)++;
       return Status::OK();
     }
     Status Skip(uint64_t n) override {
@@ -523,6 +533,7 @@ inline std::string EncodeInt(uint64_t x) {
    private:
     std::string data_;
     size_t offset_;
+    std::atomic<int>* read_count_;
   };
 
   class StringEnv : public EnvWrapper {
@@ -574,7 +585,7 @@ inline std::string EncodeInt(uint64_t x) {
       if (iter == files_.end()) {
         return Status::NotFound("The specified file does not exist", f);
       }
-      r->reset(new SeqStringSource(iter->second));
+      r->reset(new SeqStringSource(iter->second, &num_seq_file_read_));
       return Status::OK();
     }
     Status NewRandomAccessFile(const std::string& /*f*/,
@@ -651,6 +662,8 @@ inline std::string EncodeInt(uint64_t x) {
     Status UnlockFile(FileLock* /*l*/) override {
       return Status::NotSupported();
     }
+
+    std::atomic<int> num_seq_file_read_;
 
    protected:
     std::unordered_map<std::string, std::string> files_;

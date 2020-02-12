@@ -173,14 +173,8 @@ void Java_org_rocksdb_Options_setComparatorHandle__JJB(
           reinterpret_cast<rocksdb::ComparatorJniCallback*>(jcomparator_handle);
       break;
 
-    // JAVA_DIRECT_COMPARATOR
-    case 0x1:
-      comparator = reinterpret_cast<rocksdb::DirectComparatorJniCallback*>(
-          jcomparator_handle);
-      break;
-
     // JAVA_NATIVE_COMPARATOR_WRAPPER
-    case 0x2:
+    case 0x1:
       comparator = reinterpret_cast<rocksdb::Comparator*>(jcomparator_handle);
       break;
   }
@@ -1247,9 +1241,51 @@ jint Java_org_rocksdb_Options_statsDumpPeriodSec(
  */
 void Java_org_rocksdb_Options_setStatsDumpPeriodSec(
     JNIEnv*, jobject, jlong jhandle,
-    jint stats_dump_period_sec) {
+    jint jstats_dump_period_sec) {
   reinterpret_cast<rocksdb::Options*>(jhandle)->stats_dump_period_sec =
-      static_cast<int>(stats_dump_period_sec);
+      static_cast<unsigned int>(jstats_dump_period_sec);
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    statsPersistPeriodSec
+ * Signature: (J)I
+ */
+jint Java_org_rocksdb_Options_statsPersistPeriodSec(
+    JNIEnv*, jobject, jlong jhandle) {
+  return reinterpret_cast<rocksdb::Options*>(jhandle)->stats_persist_period_sec;
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    setStatsPersistPeriodSec
+ * Signature: (JI)V
+ */
+void Java_org_rocksdb_Options_setStatsPersistPeriodSec(
+    JNIEnv*, jobject, jlong jhandle, jint jstats_persist_period_sec) {
+  reinterpret_cast<rocksdb::Options*>(jhandle)->stats_persist_period_sec =
+      static_cast<unsigned int>(jstats_persist_period_sec);
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    statsHistoryBufferSize
+ * Signature: (J)J
+ */
+jlong Java_org_rocksdb_Options_statsHistoryBufferSize(
+    JNIEnv*, jobject, jlong jhandle) {
+  return reinterpret_cast<rocksdb::Options*>(jhandle)->stats_history_buffer_size;
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    setStatsHistoryBufferSize
+ * Signature: (JJ)V
+ */
+void Java_org_rocksdb_Options_setStatsHistoryBufferSize(
+    JNIEnv*, jobject, jlong jhandle, jlong jstats_history_buffer_size) {
+  reinterpret_cast<rocksdb::Options*>(jhandle)->stats_history_buffer_size =
+      static_cast<size_t>(jstats_history_buffer_size);
 }
 
 /*
@@ -1483,6 +1519,28 @@ jlong Java_org_rocksdb_Options_walBytesPerSync(
 
 /*
  * Class:     org_rocksdb_Options
+ * Method:    setStrictBytesPerSync
+ * Signature: (JZ)V
+ */
+void Java_org_rocksdb_Options_setStrictBytesPerSync(
+    JNIEnv*, jobject, jlong jhandle, jboolean jstrict_bytes_per_sync) {
+  reinterpret_cast<rocksdb::Options*>(jhandle)->strict_bytes_per_sync =
+      jstrict_bytes_per_sync == JNI_TRUE;
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    strictBytesPerSync
+ * Signature: (J)Z
+ */
+jboolean Java_org_rocksdb_Options_strictBytesPerSync(
+    JNIEnv*, jobject, jlong jhandle) {
+  auto* opt = reinterpret_cast<rocksdb::Options*>(jhandle);
+  return static_cast<jboolean>(opt->strict_bytes_per_sync);
+}
+
+/*
+ * Class:     org_rocksdb_Options
  * Method:    setEnableThreadTracking
  * Signature: (JZ)V
  */
@@ -1678,6 +1736,30 @@ jboolean Java_org_rocksdb_Options_skipStatsUpdateOnDbOpen(
     JNIEnv*, jobject, jlong jhandle) {
   auto* opt = reinterpret_cast<rocksdb::Options*>(jhandle);
   return static_cast<jboolean>(opt->skip_stats_update_on_db_open);
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    setSkipCheckingSstFileSizesOnDbOpen
+ * Signature: (JZ)V
+ */
+void Java_org_rocksdb_Options_setSkipCheckingSstFileSizesOnDbOpen(
+    JNIEnv*, jobject, jlong jhandle,
+    jboolean jskip_checking_sst_file_sizes_on_db_open) {
+  auto* opt = reinterpret_cast<rocksdb::Options*>(jhandle);
+  opt->skip_checking_sst_file_sizes_on_db_open =
+      static_cast<bool>(jskip_checking_sst_file_sizes_on_db_open);
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    skipCheckingSstFileSizesOnDbOpen
+ * Signature: (J)Z
+ */
+jboolean Java_org_rocksdb_Options_skipCheckingSstFileSizesOnDbOpen(
+    JNIEnv*, jobject, jlong jhandle) {
+  auto* opt = reinterpret_cast<rocksdb::Options*>(jhandle);
+  return static_cast<jboolean>(opt->skip_checking_sst_file_sizes_on_db_open);
 }
 
 /*
@@ -3237,14 +3319,8 @@ void Java_org_rocksdb_ColumnFamilyOptions_setComparatorHandle__JJB(
           reinterpret_cast<rocksdb::ComparatorJniCallback*>(jcomparator_handle);
       break;
 
-    // JAVA_DIRECT_COMPARATOR
-    case 0x1:
-      comparator = reinterpret_cast<rocksdb::DirectComparatorJniCallback*>(
-          jcomparator_handle);
-      break;
-
     // JAVA_NATIVE_COMPARATOR_WRAPPER
-    case 0x2:
+    case 0x1:
       comparator = reinterpret_cast<rocksdb::Comparator*>(jcomparator_handle);
       break;
   }
@@ -5441,9 +5517,9 @@ jboolean Java_org_rocksdb_DBOptions_isFdCloseOnExec(
  * Signature: (JI)V
  */
 void Java_org_rocksdb_DBOptions_setStatsDumpPeriodSec(
-    JNIEnv*, jobject, jlong jhandle, jint stats_dump_period_sec) {
+    JNIEnv*, jobject, jlong jhandle, jint jstats_dump_period_sec) {
   reinterpret_cast<rocksdb::DBOptions*>(jhandle)->stats_dump_period_sec =
-      static_cast<int>(stats_dump_period_sec);
+      static_cast<unsigned int>(jstats_dump_period_sec);
 }
 
 /*
@@ -5454,6 +5530,48 @@ void Java_org_rocksdb_DBOptions_setStatsDumpPeriodSec(
 jint Java_org_rocksdb_DBOptions_statsDumpPeriodSec(
     JNIEnv*, jobject, jlong jhandle) {
   return reinterpret_cast<rocksdb::DBOptions*>(jhandle)->stats_dump_period_sec;
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    setStatsPersistPeriodSec
+ * Signature: (JI)V
+ */
+void Java_org_rocksdb_DBOptions_setStatsPersistPeriodSec(
+    JNIEnv*, jobject, jlong jhandle, jint jstats_persist_period_sec) {
+  reinterpret_cast<rocksdb::DBOptions*>(jhandle)->stats_persist_period_sec =
+      static_cast<unsigned int>(jstats_persist_period_sec);
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    statsPersistPeriodSec
+ * Signature: (J)I
+ */
+jint Java_org_rocksdb_DBOptions_statsPersistPeriodSec(
+    JNIEnv*, jobject, jlong jhandle) {
+  return reinterpret_cast<rocksdb::DBOptions*>(jhandle)->stats_persist_period_sec;
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    setStatsHistoryBufferSize
+ * Signature: (JJ)V
+ */
+void Java_org_rocksdb_DBOptions_setStatsHistoryBufferSize(
+    JNIEnv*, jobject, jlong jhandle, jlong jstats_history_buffer_size) {
+  reinterpret_cast<rocksdb::DBOptions*>(jhandle)->stats_history_buffer_size =
+      static_cast<size_t>(jstats_history_buffer_size);
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    statsHistoryBufferSize
+ * Signature: (J)J
+ */
+jlong Java_org_rocksdb_DBOptions_statsHistoryBufferSize(
+    JNIEnv*, jobject, jlong jhandle) {
+  return reinterpret_cast<rocksdb::DBOptions*>(jhandle)->stats_history_buffer_size;
 }
 
 /*
@@ -5696,6 +5814,28 @@ jlong Java_org_rocksdb_DBOptions_walBytesPerSync(
 
 /*
  * Class:     org_rocksdb_DBOptions
+ * Method:    setStrictBytesPerSync
+ * Signature: (JZ)V
+ */
+void Java_org_rocksdb_DBOptions_setStrictBytesPerSync(
+    JNIEnv*, jobject, jlong jhandle, jboolean jstrict_bytes_per_sync) {
+  reinterpret_cast<rocksdb::DBOptions*>(jhandle)->strict_bytes_per_sync =
+      jstrict_bytes_per_sync == JNI_TRUE;
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    strictBytesPerSync
+ * Signature: (J)Z
+ */
+jboolean Java_org_rocksdb_DBOptions_strictBytesPerSync(
+    JNIEnv*, jobject, jlong jhandle) {
+  return static_cast<jboolean>(
+      reinterpret_cast<rocksdb::DBOptions*>(jhandle)->strict_bytes_per_sync);
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
  * Method:    setDelayedWriteRate
  * Signature: (JJ)V
  */
@@ -5892,6 +6032,30 @@ jboolean Java_org_rocksdb_DBOptions_skipStatsUpdateOnDbOpen(
     JNIEnv*, jobject, jlong jhandle) {
   auto* opt = reinterpret_cast<rocksdb::DBOptions*>(jhandle);
   return static_cast<jboolean>(opt->skip_stats_update_on_db_open);
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    setSkipCheckingSstFileSizesOnDbOpen
+ * Signature: (JZ)V
+ */
+void Java_org_rocksdb_DBOptions_setSkipCheckingSstFileSizesOnDbOpen(
+    JNIEnv*, jobject, jlong jhandle,
+    jboolean jskip_checking_sst_file_sizes_on_db_open) {
+  auto* opt = reinterpret_cast<rocksdb::DBOptions*>(jhandle);
+  opt->skip_checking_sst_file_sizes_on_db_open =
+      static_cast<bool>(jskip_checking_sst_file_sizes_on_db_open);
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    skipCheckingSstFileSizesOnDbOpen
+ * Signature: (J)Z
+ */
+jboolean Java_org_rocksdb_DBOptions_skipCheckingSstFileSizesOnDbOpen(
+    JNIEnv*, jobject, jlong jhandle) {
+  auto* opt = reinterpret_cast<rocksdb::DBOptions*>(jhandle);
+  return static_cast<jboolean>(opt->skip_checking_sst_file_sizes_on_db_open);
 }
 
 /*
@@ -6741,24 +6905,75 @@ jlong Java_org_rocksdb_ComparatorOptions_newComparatorOptions(
 
 /*
  * Class:     org_rocksdb_ComparatorOptions
- * Method:    useAdaptiveMutex
- * Signature: (J)Z
+ * Method:    reusedSynchronisationType
+ * Signature: (J)B
  */
-jboolean Java_org_rocksdb_ComparatorOptions_useAdaptiveMutex(
-    JNIEnv*, jobject, jlong jhandle) {
-  return reinterpret_cast<rocksdb::ComparatorJniCallbackOptions*>(jhandle)
-      ->use_adaptive_mutex;
+jbyte Java_org_rocksdb_ComparatorOptions_reusedSynchronisationType(
+    JNIEnv *, jobject, jlong jhandle) {
+  auto* comparator_opt =
+      reinterpret_cast<rocksdb::ComparatorJniCallbackOptions*>(jhandle);
+  return rocksdb::ReusedSynchronisationTypeJni::toJavaReusedSynchronisationType(
+      comparator_opt->reused_synchronisation_type);
 }
 
 /*
  * Class:     org_rocksdb_ComparatorOptions
- * Method:    setUseAdaptiveMutex
+ * Method:    setReusedSynchronisationType
+ * Signature: (JB)V
+ */
+void Java_org_rocksdb_ComparatorOptions_setReusedSynchronisationType(
+    JNIEnv*, jobject, jlong jhandle, jbyte jreused_synhcronisation_type) {
+  auto* comparator_opt =
+      reinterpret_cast<rocksdb::ComparatorJniCallbackOptions*>(jhandle);
+  comparator_opt->reused_synchronisation_type =
+      rocksdb::ReusedSynchronisationTypeJni::toCppReusedSynchronisationType(jreused_synhcronisation_type);
+}
+
+/*
+ * Class:     org_rocksdb_ComparatorOptions
+ * Method:    useDirectBuffer
+ * Signature: (J)Z
+ */
+jboolean Java_org_rocksdb_ComparatorOptions_useDirectBuffer(
+    JNIEnv*, jobject, jlong jhandle) {
+  return static_cast<jboolean>(
+      reinterpret_cast<rocksdb::ComparatorJniCallbackOptions*>(jhandle)
+          ->direct_buffer);
+}
+
+/*
+ * Class:     org_rocksdb_ComparatorOptions
+ * Method:    setUseDirectBuffer
  * Signature: (JZ)V
  */
-void Java_org_rocksdb_ComparatorOptions_setUseAdaptiveMutex(
-    JNIEnv*, jobject, jlong jhandle, jboolean juse_adaptive_mutex) {
+void Java_org_rocksdb_ComparatorOptions_setUseDirectBuffer(
+    JNIEnv*, jobject, jlong jhandle, jboolean jdirect_buffer) {
   reinterpret_cast<rocksdb::ComparatorJniCallbackOptions*>(jhandle)
-      ->use_adaptive_mutex = static_cast<bool>(juse_adaptive_mutex);
+     ->direct_buffer = jdirect_buffer == JNI_TRUE;
+}
+
+/*
+ * Class:     org_rocksdb_ComparatorOptions
+ * Method:    maxReusedBufferSize
+ * Signature: (J)I
+ */
+jint Java_org_rocksdb_ComparatorOptions_maxReusedBufferSize(
+    JNIEnv*, jobject, jlong jhandle) {
+  return static_cast<jint>(
+      reinterpret_cast<rocksdb::ComparatorJniCallbackOptions*>(jhandle)
+        ->max_reused_buffer_size);
+}
+
+/*
+ * Class:     org_rocksdb_ComparatorOptions
+ * Method:    setMaxReusedBufferSize
+ * Signature: (JI)V
+ */
+void Java_org_rocksdb_ComparatorOptions_setMaxReusedBufferSize(
+    JNIEnv*, jobject, jlong jhandle, jint jmax_reused_buffer_size) {
+  reinterpret_cast<rocksdb::ComparatorJniCallbackOptions*>(jhandle)
+      ->max_reused_buffer_size
+          = static_cast<int32_t>(jmax_reused_buffer_size);
 }
 
 /*

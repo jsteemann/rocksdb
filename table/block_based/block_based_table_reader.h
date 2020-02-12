@@ -51,7 +51,7 @@ class FullFilterBlockReader;
 class Footer;
 class InternalKeyComparator;
 class Iterator;
-class RandomAccessFile;
+class FSRandomAccessFile;
 class TableCache;
 class TableReader;
 class WritableFile;
@@ -413,9 +413,9 @@ class BlockBasedTable : public TableReader {
       TailPrefetchStats* tail_prefetch_stats, const bool prefetch_all,
       const bool preload_all,
       std::unique_ptr<FilePrefetchBuffer>* prefetch_buffer);
-  Status ReadMetaBlock(FilePrefetchBuffer* prefetch_buffer,
-                       std::unique_ptr<Block>* meta_block,
-                       std::unique_ptr<InternalIterator>* iter);
+  Status ReadMetaIndexBlock(FilePrefetchBuffer* prefetch_buffer,
+                            std::unique_ptr<Block>* metaindex_block,
+                            std::unique_ptr<InternalIterator>* iter);
   Status TryReadPropertiesWithGlobalSeqno(FilePrefetchBuffer* prefetch_buffer,
                                           const Slice& handle_value,
                                           TableProperties** table_properties);
@@ -446,9 +446,9 @@ class BlockBasedTable : public TableReader {
   static void SetupCacheKeyPrefix(Rep* rep);
 
   // Generate a cache key prefix from the file
-  static void GenerateCachePrefix(Cache* cc, RandomAccessFile* file,
+  static void GenerateCachePrefix(Cache* cc, FSRandomAccessFile* file,
                                   char* buffer, size_t* size);
-  static void GenerateCachePrefix(Cache* cc, WritableFile* file, char* buffer,
+  static void GenerateCachePrefix(Cache* cc, FSWritableFile* file, char* buffer,
                                   size_t* size);
 
   // Given an iterator return its offset in file.
@@ -461,8 +461,13 @@ class BlockBasedTable : public TableReader {
   void DumpKeyValue(const Slice& key, const Slice& value,
                     WritableFile* out_file);
 
+  // A cumulative data block file read in MultiGet lower than this size will
+  // use a stack buffer
+  static constexpr size_t kMultiGetReadStackBufSize = 8192;
+
   friend class PartitionedFilterBlockReader;
   friend class PartitionedFilterBlockTest;
+  friend class DBBasicTest_MultiGetIOBufferOverrun_Test;
 };
 
 // Maitaning state of a two-level iteration on a partitioned index structure.
@@ -543,6 +548,7 @@ struct BlockBasedTable::Rep {
   // module should not be relying on db module. However to make things easier
   // and compatible with existing code, we introduce a wrapper that allows
   // block to extract prefix without knowing if a key is internal or not.
+  // null if no prefix_extractor is passed in when opening the table reader.
   std::unique_ptr<SliceTransform> internal_prefix_transform;
   std::shared_ptr<const SliceTransform> table_prefix_extractor;
 
@@ -598,6 +604,13 @@ struct BlockBasedTable::Rep {
 
   uint64_t sst_number_for_tracing() const {
     return file ? TableFileNameToNumber(file->file_name()) : UINT64_MAX;
+  }
+  void CreateFilePrefetchBuffer(
+      size_t readahead_size, size_t max_readahead_size,
+      std::unique_ptr<FilePrefetchBuffer>* fpb) const {
+    fpb->reset(new FilePrefetchBuffer(file.get(), readahead_size,
+                                      max_readahead_size,
+                                      !ioptions.allow_mmap_reads /* enable */));
   }
 };
 
@@ -674,7 +687,8 @@ class BlockBasedTableIterator : public InternalIteratorBase<TValue> {
     return block_iter_.value();
   }
   Status status() const override {
-    if (!index_iter_->status().ok()) {
+    // Prefix index set status to NotFound when the prefix does not exist
+    if (!index_iter_->status().ok() && !index_iter_->status().IsNotFound()) {
       return index_iter_->status();
     } else if (block_iter_points_to_real_block_) {
       return block_iter_.status();
@@ -711,20 +725,6 @@ class BlockBasedTableIterator : public InternalIteratorBase<TValue> {
            block_iter_points_to_real_block_;
   }
 
-  bool CheckPrefixMayMatch(const Slice& ikey) {
-    if (check_filter_ &&
-        !table_->PrefixMayMatch(ikey, read_options_, prefix_extractor_,
-                                need_upper_bound_check_, &lookup_context_)) {
-      // TODO remember the iterator is invalidated because of prefix
-      // match. This can avoid the upper level file iterator to falsely
-      // believe the position is the end of the SST file and move to
-      // the first key of the next file.
-      ResetDataIter();
-      return false;
-    }
-    return true;
-  }
-
   void ResetDataIter() {
     if (block_iter_points_to_real_block_) {
       if (pinned_iters_mgr_ != nullptr && pinned_iters_mgr_->PinningEnabled()) {
@@ -744,6 +744,11 @@ class BlockBasedTableIterator : public InternalIteratorBase<TValue> {
   }
 
  private:
+  enum class IterDirection {
+    kForward,
+    kBackward,
+  };
+
   const BlockBasedTable* table_;
   const ReadOptions read_options_;
   const InternalKeyComparator& icomp_;
@@ -793,6 +798,26 @@ class BlockBasedTableIterator : public InternalIteratorBase<TValue> {
   // Note MyRocks may update iterate bounds between seek. To workaround it,
   // we need to check and update data_block_within_upper_bound_ accordingly.
   void CheckDataBlockWithinUpperBound();
+
+  bool CheckPrefixMayMatch(const Slice& ikey, IterDirection direction) {
+    if (need_upper_bound_check_ && direction == IterDirection::kBackward) {
+      // Upper bound check isn't sufficnet for backward direction to
+      // guarantee the same result as total order, so disable prefix
+      // check.
+      return true;
+    }
+    if (check_filter_ &&
+        !table_->PrefixMayMatch(ikey, read_options_, prefix_extractor_,
+                                need_upper_bound_check_, &lookup_context_)) {
+      // TODO remember the iterator is invalidated because of prefix
+      // match. This can avoid the upper level file iterator to falsely
+      // believe the position is the end of the SST file and move to
+      // the first key of the next file.
+      ResetDataIter();
+      return false;
+    }
+    return true;
+  }
 };
 
 }  // namespace rocksdb
